@@ -1,0 +1,33 @@
+# Dependencies (Puppeteer + its bundled Chromium — large, re-installable via npm i)
+node_modules/
+
+# npm / yarn / pnpm logs & debug output
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm/
+
+# Lockfile is optional for a tiny dev-only test dep — keep package.json, ignore lock
+# (remove the next line if you want reproducible installs committed)
+package-lock.json
+
+# Puppeteer / browser caches
+.cache/
+.local-chromium/
+
+# Test artifacts / screenshots that may be generated
+*.png
+*.log
+test-results/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# OS cruft
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store

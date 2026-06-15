@@ -70,6 +70,14 @@
   #t-hand  { width:120px; height:46px; bottom:30px; right:24px; font-size:15px; }
   body.touch #speedo { bottom:auto; top:64px; }
   body.touch #mini { bottom:auto; top:120px; left:18px; width:120px; height:120px; }
+  /* in tilt mode hide the on-screen steer buttons & show a tilt meter */
+  body.tilt #t-left, body.tilt #t-right { display:none; }
+  #tiltmeter { display:none; position:absolute; bottom:120px; left:24px;
+    width:172px; height:10px; background:#ffffff1a; border:1px solid #ffffff33;
+    border-radius:6px; pointer-events:none; }
+  body.touch.tilt #tiltmeter { display:block; }
+  #tiltdot { position:absolute; top:-3px; left:50%; width:16px; height:16px; margin-left:-8px;
+    background:var(--accent); border-radius:50%; transition:left .05s linear; }
 </style>
 </head>
 <body>
@@ -80,6 +88,7 @@
     <input id="seedbox" placeholder="seed (optional)" />
     <button id="newRace" class="primary">↻ New Race</button>
     <button id="reset">⟲ Restart</button>
+    <button id="steerMode" style="display:none">🎮 Touch steer</button>
   </div>
 
   <div class="hud" id="topleft">
@@ -113,6 +122,7 @@
     <div class="tbtn" id="t-brake">⟂</div>
     <div class="tbtn" id="t-gas">▲</div>
     <div class="tbtn wide" id="t-hand">DRIFT</div>
+    <div id="tiltmeter"><div id="tiltdot"></div></div>
   </div>
 </div>
 
@@ -406,9 +416,56 @@ bindHold('t-left','left'); bindHold('t-right','right');
 bindHold('t-gas','gas'); bindHold('t-brake','brake'); bindHold('t-hand','hand');
 
 // Show touch UI on touch-capable devices; also flip on first touch just in case.
-if (window.matchMedia('(pointer:coarse)').matches || 'ontouchstart' in window)
+const steerModeBtn = document.getElementById('steerMode');
+function enableTouchUI() {
   document.body.classList.add('touch');
-window.addEventListener('touchstart', () => document.body.classList.add('touch'), { once:true });
+  steerModeBtn.style.display = '';        // reveal the steer-mode toggle
+}
+if (window.matchMedia('(pointer:coarse)').matches || 'ontouchstart' in window) enableTouchUI();
+window.addEventListener('touchstart', enableTouchUI, { once:true });
+
+// ---------- steering mode: 'touch' (default) or 'tilt' (accelerometer) ----------
+let steerMode = 'touch';
+let tiltSteer = 0;          // -1..1 derived from device tilt
+let tiltBaseline = null;    // neutral angle captured when tilt is enabled
+
+// Map the relevant tilt axis to a steer value, accounting for screen orientation.
+function onOrientation(e) {
+  if (steerMode !== 'tilt') return;
+  const ang = (screen.orientation && screen.orientation.angle) ||
+              (typeof window.orientation === 'number' ? window.orientation : 0);
+  let raw;
+  if (ang === 90)                       raw = e.beta;    // landscape (rotated CW)
+  else if (ang === 270 || ang === -90)  raw = -e.beta;   // landscape (rotated CCW)
+  else if (ang === 180)                 raw = -e.gamma;  // upside-down portrait
+  else                                  raw = e.gamma;   // normal portrait
+  if (raw == null) return;
+  if (tiltBaseline === null) tiltBaseline = raw;         // calibrate to however you hold it
+  const SENS = 22;                                       // degrees of tilt for full lock
+  tiltSteer = clamp((raw - tiltBaseline) / SENS, -1, 1);
+}
+window.addEventListener('deviceorientation', onOrientation);
+
+async function setSteerMode(mode) {
+  if (mode === 'tilt') {
+    // iOS 13+ requires explicit permission, requested from a user gesture (this click).
+    const DOE = window.DeviceOrientationEvent;
+    if (DOE && typeof DOE.requestPermission === 'function') {
+      try {
+        if (await DOE.requestPermission() !== 'granted') { toast('Tilt permission denied'); return; }
+      } catch { toast('Tilt unavailable'); return; }
+    }
+    steerMode = 'tilt'; tiltBaseline = null; tiltSteer = 0;
+    document.body.classList.add('tilt');
+    steerModeBtn.textContent = '📱 Tilt steer';
+    toast('Tilt to steer');
+  } else {
+    steerMode = 'touch';
+    document.body.classList.remove('tilt');
+    steerModeBtn.textContent = '🎮 Touch steer';
+  }
+}
+steerModeBtn.onclick = () => setSteerMode(steerMode === 'touch' ? 'tilt' : 'touch');
 
 document.getElementById('newRace').onclick = () => {
   const v = document.getElementById('seedbox').value.trim();
@@ -451,6 +508,7 @@ function frame(now) {
   if (keys['s'] || keys['arrowdown']  || touch.brake) throttle -= 1;
   if (keys['a'] || keys['arrowleft']  || touch.left)  steerIn -= 1;
   if (keys['d'] || keys['arrowright'] || touch.right) steerIn += 1;
+  if (steerMode === 'tilt') steerIn = clamp(steerIn + tiltSteer, -1, 1);
   const handbrake = !!keys[' '] || touch.hand;
 
   const near = nearestCenterIdx(car.x, car.y);
@@ -710,6 +768,8 @@ function updateHUD() {
   const kmh = Math.round(car.speed * 0.18);   // arbitrary world->km/h scale
   document.getElementById('kmh').textContent = kmh;
   document.getElementById('gearfill').style.width = clamp(car.speed / 720 * 100, 0, 100) + '%';
+  if (steerMode === 'tilt')
+    document.getElementById('tiltdot').style.left = (50 + tiltSteer * 45) + '%';
 }
 
 // ---------- boot ----------
