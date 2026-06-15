@@ -2,13 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <title>Procedural Racer — every race a new world</title>
 <style>
   :root { --fg:#e9f1ff; --accent:#5cdb95; }
   * { margin:0; padding:0; box-sizing:border-box; }
   html,body { height:100%; background:#0a0d14; color:var(--fg);
-    font-family:'Segoe UI',system-ui,sans-serif; overflow:hidden; }
+    font-family:'Segoe UI',system-ui,sans-serif; overflow:hidden;
+    touch-action:none; overscroll-behavior:none; }
   #wrap { position:relative; width:100vw; height:100vh; }
   canvas { display:block; width:100%; height:100%; }
 
@@ -50,6 +51,25 @@
   #toast { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
     font-size:42px; font-weight:800; letter-spacing:1px; opacity:0; transition:opacity .3s;
     text-shadow:0 2px 16px #000c; pointer-events:none; text-align:center; }
+
+  /* ---- touch controls (hidden unless .touch on body) ---- */
+  #touch { display:none; }
+  body.touch #touch { display:block; }
+  body.touch #help { display:none; }
+  .tbtn { position:absolute; pointer-events:auto; user-select:none; -webkit-user-select:none;
+    touch-action:none; -webkit-tap-highlight-color:transparent;
+    display:flex; align-items:center; justify-content:center;
+    border-radius:50%; background:#1b2436cc; border:2px solid #ffffff26; color:var(--fg);
+    font-size:30px; font-weight:700; backdrop-filter:blur(2px); }
+  .tbtn.active { background:var(--accent); color:#06210f; border-color:var(--accent); }
+  .tbtn.wide { border-radius:18px; }
+  #t-left  { width:78px; height:78px; bottom:96px; left:24px; }
+  #t-right { width:78px; height:78px; bottom:96px; left:118px; }
+  #t-gas   { width:94px; height:94px; bottom:96px; right:24px; background:#1e5c39cc; }
+  #t-brake { width:78px; height:78px; bottom:104px; right:130px; background:#5c1e1ecc; }
+  #t-hand  { width:120px; height:46px; bottom:30px; right:24px; font-size:15px; }
+  body.touch #speedo { bottom:auto; top:64px; }
+  body.touch #mini { bottom:auto; top:120px; left:18px; width:120px; height:120px; }
 </style>
 </head>
 <body>
@@ -86,6 +106,14 @@
   </div>
 
   <div id="toast"></div>
+
+  <div id="touch">
+    <div class="tbtn" id="t-left">‹</div>
+    <div class="tbtn" id="t-right">›</div>
+    <div class="tbtn" id="t-brake">⟂</div>
+    <div class="tbtn" id="t-gas">▲</div>
+    <div class="tbtn wide" id="t-hand">DRIFT</div>
+  </div>
 </div>
 
 <script>
@@ -362,6 +390,26 @@ addEventListener('keydown', e => {
 });
 addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; if (e.key === ' ') keys[' '] = false; });
 
+// ---------- touch controls ----------
+// Separate flags so touch and keyboard can both feed the same input pipeline.
+const touch = { left:false, right:false, gas:false, brake:false, hand:false };
+function bindHold(id, prop) {
+  const el = document.getElementById(id);
+  const on  = e => { e.preventDefault(); touch[prop] = true;  el.classList.add('active'); };
+  const off = e => { e.preventDefault(); touch[prop] = false; el.classList.remove('active'); };
+  el.addEventListener('pointerdown', e => { el.setPointerCapture(e.pointerId); on(e); });
+  el.addEventListener('pointerup', off);
+  el.addEventListener('pointercancel', off);
+  el.addEventListener('lostpointercapture', off);
+}
+bindHold('t-left','left'); bindHold('t-right','right');
+bindHold('t-gas','gas'); bindHold('t-brake','brake'); bindHold('t-hand','hand');
+
+// Show touch UI on touch-capable devices; also flip on first touch just in case.
+if (window.matchMedia('(pointer:coarse)').matches || 'ontouchstart' in window)
+  document.body.classList.add('touch');
+window.addEventListener('touchstart', () => document.body.classList.add('touch'), { once:true });
+
 document.getElementById('newRace').onclick = () => {
   const v = document.getElementById('seedbox').value.trim();
   buildRace(v ? (/^\d+$/.test(v) ? parseInt(v, 10) : hashStr(v)) : (Math.floor(performance.now()) ^ (Math.random()*1e9|0)));
@@ -399,11 +447,11 @@ function frame(now) {
 
   // ----- input -> controls -----
   let throttle = 0, steerIn = 0;
-  if (keys['w'] || keys['arrowup'])    throttle += 1;
-  if (keys['s'] || keys['arrowdown'])  throttle -= 1;
-  if (keys['a'] || keys['arrowleft'])  steerIn -= 1;
-  if (keys['d'] || keys['arrowright']) steerIn += 1;
-  const handbrake = !!keys[' '];
+  if (keys['w'] || keys['arrowup']    || touch.gas)   throttle += 1;
+  if (keys['s'] || keys['arrowdown']  || touch.brake) throttle -= 1;
+  if (keys['a'] || keys['arrowleft']  || touch.left)  steerIn -= 1;
+  if (keys['d'] || keys['arrowright'] || touch.right) steerIn += 1;
+  const handbrake = !!keys[' '] || touch.hand;
 
   const near = nearestCenterIdx(car.x, car.y);
   const onTrack = near.d < track.width;
