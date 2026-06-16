@@ -267,6 +267,44 @@ a skid point is recorded; skids fade out over time and are capped at 600 entries
 
 The method also stores `speed`, `forwardSpeed`, and `slip` for the HUD and rendering.
 
+### Out-of-bounds wall & collision sparks
+
+You can slide off the asphalt into a **grass runoff zone**, but not drive endlessly into the
+void. `clampToBoundary()` (called right after `car.update`) enforces an **invisible wall that
+follows the track's shape** — much better than a circle, which would clip an irregular loop.
+
+The rule: the car may not be further than `track.width + RUNOFF` (`RUNOFF = 150`) from the
+nearest centreline node. On contact:
+
+```js
+const nx = dx / d, ny = dy / d;            // outward unit normal (centreline → car)
+car.x = node.x + nx * MAX;                  // snap the car back onto the wall
+car.y = node.y + ny * MAX;
+const vOut = car.vx * nx + car.vy * ny;     // velocity component pointing outward
+if (vOut > 0) { car.vx -= nx * vOut; car.vy -= ny * vOut; }  // cancel only that part
+car.vx *= 0.9; car.vy *= 0.9;               // scrape friction
+```
+
+Because only the **outward** velocity is cancelled, the car **scrapes along the wall** (keeps
+its tangential speed) instead of dead-stopping or punching through. The wall is drawn as inner +
+outer dashed lines by `drawBoundary()` (the centreline offset by `±MAX` along each node's normal),
+so players can see the limit.
+
+**Collision sparks.** When the car hits the wall hard enough, `spawnSparks()` emits a burst of
+particles at the contact point:
+
+```js
+const impact = Math.max(vOut, car.speed * 0.25);   // head-on hits spark more than shallow scrapes
+if (impact > 30) spawnSparks(car.x, car.y, nx, ny, impact);
+```
+
+Each spark flies **inward along the wall** (a mix of the wall tangent and the inward normal) with
+a randomised speed and a short lifetime. `updateSparks(dt)` moves them with air drag and fades
+them; `drawSparks()` renders them as additive (`globalCompositeOperation = 'lighter'`) streaks
+that shift colour with age — **white → orange → red** — and trail behind their motion. The count
+scales with impact (1–7 per hit) and the total is capped at 220 for performance. Sparks are reset
+on each new race.
+
 ---
 
 ## 7. The game loop
@@ -279,7 +317,8 @@ The method also stores `speed`, `forwardSpeed`, and `slip` for the HUD and rende
 3. **On/off-track test** — `nearestCenterIdx()` finds the closest centreline node (searching a
    small window around the last known index for speed) and compares the distance to `track.width`.
 4. **Update physics** — `car.update(...)` (only once the player first applies throttle, so the
-   clock doesn't start prematurely).
+   clock doesn't start prematurely), then **`clampToBoundary()`** (the out-of-bounds wall) and
+   **`updateSparks(dt)`** (advance collision particles).
 5. **Checkpoint / lap logic** (see next section).
 6. **Camera follow** (see [Camera](#9-camera)).
 7. **Toast fade**, then **`render()`** and **`updateHUD()`**.
@@ -332,14 +371,16 @@ All drawing is plain **HTML5 Canvas 2D**. `render()` runs every frame:
 3. Draw a subtle two-tone **ground texture** (checker bands).
 4. `drawTrack()` — strokes the centreline three times with decreasing width: a light **curb**,
    the dark **asphalt**, then a dashed white **centre line**.
-5. `drawSkids()` — fading black tire marks.
-6. `drawProps()` — trees / cacti / pines with little shadows (vector shapes, no images).
-7. `drawStartLine()` — a checkered start/finish band, rotated to the track tangent.
-8. `drawCheckpoint()` — a pulsing accent-coloured gate at the *next* checkpoint.
-9. `drawCar()` — the car body (gradient), windscreen, headlights, and **wheels that visually
-   turn** with the steering input.
-10. Restore the transform and draw a **vignette** (radial gradient toward the biome fog colour).
-11. `drawMinimap()` (see below).
+5. `drawBoundary()` — inner + outer dashed **out-of-bounds lines** (the wall, see §6).
+6. `drawSkids()` — fading black tire marks.
+7. `drawProps()` — trees / cacti / pines with little shadows (vector shapes, no images).
+8. `drawStartLine()` — a checkered start/finish band, rotated to the track tangent.
+9. `drawCheckpoint()` — a pulsing accent-coloured gate at the *next* checkpoint.
+10. `drawCar()` — the car body (gradient), windscreen, headlights, and **wheels that visually
+    turn** with the steering input.
+11. `drawSparks()` — additive white→orange→red **collision spark** streaks (see §6).
+12. Restore the transform and draw a **vignette** (radial gradient toward the biome fog colour).
+13. `drawMinimap()` (see below).
 
 `roundRect()` is a small helper for rounded-rectangle paths (car body, pads).
 
@@ -413,6 +454,8 @@ What it does:
    (**determinism**), then clicks **New Race** to confirm reseeding works.
 4. Asserts the track exists (>100 centreline points), there are exactly **20 checkpoints**, and a
    biome is selected.
+5. **Boundary check** — teleports the car far out of bounds, runs `clampToBoundary()`, and
+   confirms it gets pulled back to within `track.width + RUNOFF` of the centreline.
 
 Run it:
 ```bash
@@ -440,6 +483,8 @@ All the "feel" knobs are easy to find:
 | Track size | `R` (base radius) in `generateTrack` | |
 | Track curviness | `POINTS` count and the radius-variation range | |
 | Road width | the `width` line in `generateTrack` | |
+| Grass runoff before the wall | `RUNOFF` | Bigger = more room off-track; smaller = tight walls |
+| Spark amount / look | `spawnSparks()` (count, speed) and `drawSparks()` (colours) | |
 | Number of laps | `TOTAL_LAPS` | |
 | Number of checkpoints | `NUM_CP` | |
 | Biome palettes / new biomes | the `BIOMES` table | Add a key, give it colours + a `prop` |
@@ -471,3 +516,8 @@ All the "feel" knobs are easy to find:
 - **Checkpoint** — an ordered gate along the track that must be passed to count a lap.
 - **dt (delta time)** — seconds elapsed since the last frame; used to keep physics
   frame-rate-independent.
+- **Runoff (`RUNOFF`)** — the grass margin past the asphalt you may drive on before hitting the
+  out-of-bounds wall.
+- **Boundary wall** — the invisible limit at `track.width + RUNOFF` from the centreline; the car
+  scrapes along it instead of leaving the world.
+- **Spark** — a short-lived collision particle emitted when the car strikes the boundary wall.

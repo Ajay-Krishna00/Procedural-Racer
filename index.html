@@ -351,7 +351,9 @@ let nextCheckpoint = 0, lap = 0, started = false;
 let raceTime = 0, lapStart = 0, lastLap = null, bestLap = null;
 let checkpoints = [];          // sampled centreline nodes used as gates
 const NUM_CP = 20;
+const RUNOFF = 150;            // how far past the asphalt you may stray before the wall
 let currentSeed = 0;
+let sparks = [];              // collision spark particles
 
 function buildRace(seed) {
   currentSeed = seed >>> 0;
@@ -378,6 +380,7 @@ function buildRace(seed) {
   car.reset(s.x, s.y, a);
 
   cam.x = car.x; cam.y = car.y;
+  sparks = [];
   nextCheckpoint = 1; lap = 0; started = false;
   raceTime = 0; lapStart = 0; lastLap = null; bestLap = null;
 
@@ -428,9 +431,13 @@ window.addEventListener('touchstart', enableTouchUI, { once:true });
 let steerMode = 'touch';
 let tiltSteer = 0;          // -1..1 derived from device tilt
 let tiltBaseline = null;    // neutral angle captured when tilt is enabled
+let gotOrientation = false; // have we ever received a motion event?
 
 // Map the relevant tilt axis to a steer value, accounting for screen orientation.
 function onOrientation(e) {
+  // gamma/beta are null on devices with no orientation sensor / non-secure context.
+  if (e.gamma == null && e.beta == null) return;
+  gotOrientation = true;
   if (steerMode !== 'tilt') return;
   const ang = (screen.orientation && screen.orientation.angle) ||
               (typeof window.orientation === 'number' ? window.orientation : 0);
@@ -444,10 +451,18 @@ function onOrientation(e) {
   const SENS = 22;                                       // degrees of tilt for full lock
   tiltSteer = clamp((raw - tiltBaseline) / SENS, -1, 1);
 }
+// Listen to both the standard and the "absolute" variant (some Android builds only fire one).
 window.addEventListener('deviceorientation', onOrientation);
+window.addEventListener('deviceorientationabsolute', onOrientation);
 
 async function setSteerMode(mode) {
   if (mode === 'tilt') {
+    // Motion sensors require a SECURE CONTEXT (https:// or localhost). Plain
+    // http://<ip> and file:// silently deliver no data on mobile browsers.
+    if (!window.isSecureContext) {
+      toast('Tilt needs HTTPS\n(see README)');
+      return;
+    }
     // iOS 13+ requires explicit permission, requested from a user gesture (this click).
     const DOE = window.DeviceOrientationEvent;
     if (DOE && typeof DOE.requestPermission === 'function') {
@@ -459,6 +474,14 @@ async function setSteerMode(mode) {
     document.body.classList.add('tilt');
     steerModeBtn.textContent = '📱 Tilt steer';
     toast('Tilt to steer');
+    // If no motion data arrives shortly, the sensor/permission isn't delivering — tell the user.
+    gotOrientation = false;
+    setTimeout(() => {
+      if (steerMode === 'tilt' && !gotOrientation) {
+        toast('No motion data\nfrom this device');
+        setSteerMode('touch');
+      }
+    }, 1400);
   } else {
     steerMode = 'touch';
     document.body.classList.remove('tilt');
@@ -493,6 +516,56 @@ function nearestCenterIdx(x, y) {
   return { idx: best, d: bestD };
 }
 
+// Keep the car within RUNOFF of the nearest centreline point. This forms an
+// invisible wall that hugs the track's shape (better than a circle, which would
+// clip an irregular loop). On contact we project the car back to the boundary
+// and remove the outward velocity, so it scrapes along the wall instead of
+// sticking or punching through.
+function clampToBoundary() {
+  const node = track.center[nearestCenterIdx(car.x, car.y).idx];
+  const MAX = track.width + RUNOFF;
+  const dx = car.x - node.x, dy = car.y - node.y;
+  const d = Math.hypot(dx, dy);
+  if (d <= MAX) return;
+  const nx = dx / d, ny = dy / d;           // outward unit normal
+  car.x = node.x + nx * MAX;                 // snap back onto the wall
+  car.y = node.y + ny * MAX;
+  const vOut = car.vx * nx + car.vy * ny;    // outward velocity component
+  if (vOut > 0) { car.vx -= nx * vOut; car.vy -= ny * vOut; }  // cancel it
+  car.vx *= 0.9; car.vy *= 0.9;              // scrape friction
+  // throw sparks at the contact point; more for a harder/faster hit
+  const impact = Math.max(vOut, car.speed * 0.25);
+  if (impact > 30) spawnSparks(car.x, car.y, nx, ny, impact);
+}
+
+// Spawn spark particles flying inward along the wall from a contact point.
+function spawnSparks(x, y, nx, ny, impact) {
+  const count = Math.min(7, 1 + Math.floor(impact / 45));
+  const tx = -ny, ty = nx;                    // tangent (along the wall)
+  for (let i = 0; i < count; i++) {
+    const along = (Math.random() - 0.5) * 2;  // spray both ways along the wall
+    const inward = 0.3 + Math.random() * 0.7; // and away from the wall
+    const spd = 90 + Math.random() * (120 + impact * 0.6);
+    sparks.push({
+      x, y,
+      vx: (tx * along - nx * inward) * spd,
+      vy: (ty * along - ny * inward) * spd,
+      life: 1, max: 0.25 + Math.random() * 0.3,
+    });
+  }
+  if (sparks.length > 220) sparks.splice(0, sparks.length - 220);
+}
+
+function updateSparks(dt) {
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const s = sparks[i];
+    s.x += s.vx * dt; s.y += s.vy * dt;
+    s.vx *= 0.9; s.vy *= 0.9;                  // air drag
+    s.life -= dt / s.max;
+    if (s.life <= 0) sparks.splice(i, 1);
+  }
+}
+
 // =============================================================================
 //  UPDATE
 // =============================================================================
@@ -517,7 +590,9 @@ function frame(now) {
   if (started || throttle !== 0) {
     if (!started && throttle > 0) { started = true; lapStart = raceTime; }
     car.update(dt, throttle, steerIn, handbrake, onTrack);
+    clampToBoundary();          // invisible wall that follows the track shape
   }
+  updateSparks(dt);
   if (started) raceTime += dt;
 
   // ----- checkpoint / lap logic -----
@@ -581,11 +656,13 @@ function render() {
   }
 
   drawTrack();
+  drawBoundary();
   drawSkids();
   drawProps();
   drawStartLine();
   drawCheckpoint();
   drawCar();
+  drawSparks();
 
   ctx.restore();
 
@@ -623,6 +700,43 @@ function drawTrack() {
   ctx.setLineDash([22, 30]);
   ctx.lineWidth = 4; ctx.strokeStyle = '#ffffff55'; ctx.stroke();
   ctx.setLineDash([]);
+}
+
+// The out-of-bounds wall, drawn as inner + outer dashed lines offset from the
+// centreline by (width + RUNOFF) along each node's normal. Matches clampToBoundary().
+function drawBoundary() {
+  const MAX = track.width + RUNOFF;
+  ctx.setLineDash([26, 20]);
+  ctx.lineWidth = 7; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  ctx.strokeStyle = biome.edge + '55';
+  for (const side of [1, -1]) {              // outer ring and inner ring
+    ctx.beginPath();
+    for (let i = 0; i <= track.center.length; i++) {
+      const p = track.center[i % track.center.length];
+      const x = p.x + p.nx * MAX * side, y = p.y + p.ny * MAX * side;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+}
+
+// Glowing collision sparks — small additive streaks fading from white to orange.
+function drawSparks() {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  for (const s of sparks) {
+    const len = 0.04 + s.life * 0.05;
+    ctx.globalAlpha = s.life;
+    ctx.strokeStyle = s.life > 0.6 ? '#fff6c0' : (s.life > 0.3 ? '#ffb43f' : '#ff5b2e');
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(s.x, s.y);
+    ctx.lineTo(s.x - s.vx * len, s.y - s.vy * len);  // streak trails behind motion
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 function drawSkids() {

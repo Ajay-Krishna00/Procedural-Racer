@@ -59,6 +59,16 @@ state.physicsOk = physicsOk;
 state.deterministic = seedA === 12345 && seedA2.seed === 12345 &&
                       seedA2.biome && seedA2.len > 100;
 
+// boundary: teleport the car far out of bounds, run the clamp, and confirm it
+// is pulled back to within (track.width + RUNOFF) of the centreline.
+state.boundary = await page.evaluate(() => {
+  car.x = 99999; car.y = 99999; car.vx = 5000; car.vy = 5000;
+  for (let i = 0; i < 5; i++) clampToBoundary();
+  let near = Infinity;
+  for (const p of track.center) near = Math.min(near, Math.hypot(car.x - p.x, car.y - p.y));
+  return { dist: Math.round(near), limit: Math.round(track.width + RUNOFF), ok: near <= track.width + RUNOFF + 1 };
+});
+
 await browser.close();
 
 console.log('--- captured state ---');
@@ -70,6 +80,7 @@ if (!state.hasTrack) problems.push('track not generated / too few centreline poi
 if (!state.carNum) problems.push('car position is not a number');
 if (!state.physicsOk) problems.push('car did not move under throttle, or physics produced non-finite values');
 if (!state.deterministic) problems.push('fixed-seed regeneration was not deterministic');
+if (!state.boundary || !state.boundary.ok) problems.push('out-of-bounds car was not clamped to the track boundary');
 if (state.checkpoints !== 20) problems.push('expected 20 checkpoints, got ' + state.checkpoints);
 if (!state.biome) problems.push('no biome selected');
 
